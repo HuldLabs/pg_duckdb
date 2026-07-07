@@ -103,9 +103,11 @@ jobs:
             echo "PG_CFLAGS=$PG_CFLAGS"
             echo "PG_CXXFLAGS=$PG_CXXFLAGS"
 
-            make -s -j$(nproc) install DUCKDB_BUILD=$DUCKDB_BUILD 2>/tmp/build.log
+            make -s -j$(nproc) DUCKDB_BUILD=$DUCKDB_BUILD 2>/tmp/build.log
             echo "=== Build exit: $? ==="
-            tail -5 /tmp/build.log
+            tail -3 /tmp/build.log
+            echo "=== Looking for .so ==="
+            find . -name 'pg_duckdb.so' -type f -ls
 
       - name: List build artifacts
         run: |
