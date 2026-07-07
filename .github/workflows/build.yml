@@ -6,14 +6,8 @@
 #
 # Usage:
 #   1. gh workflow run build.yml -f pg_version=18
-#   2. Download artifact (pg_duckdb-*.tar.gz)
-#   3. SCP to J4125 and install:
-#        tar xzf pg_duckdb-*.tar.gz
-#        sudo cp pg_duckdb.so $(pg_config --pkglibdir)/
-#        sudo cp pg_duckdb.control $(pg_config --sharedir)/extension/
-#        sudo cp sql/*.sql $(pg_config --sharedir)/extension/
-#        echo "shared_preload_libraries = 'pg_duckdb'" >> /etc/postgresql/18/main/postgresql.conf
-#        sudo systemctl restart postgresql@18-main
+#   2. Download artifact
+#   3. SCP to J4125 and install
 # =============================================================================
 
 name: Build pg_duckdb
@@ -31,9 +25,9 @@ on:
           - '17'
           - '18'
       build_type:
-        description: 'Build type (Release / Debug / ReleaseStatic)'
+        description: 'Build type'
         required: false
-        default: 'Release'
+        default: 'ReleaseStatic'
         type: choice
         options:
           - Release
@@ -46,8 +40,7 @@ concurrency:
 
 env:
   PG_VERSION: ${{ inputs.pg_version || '18' }}
-  DUCKDB_BUILD: ${{ inputs.build_type || 'Release' }}
-  # Cross-compile flags: arch x86-64-v2, no AVX/AVX2/FMA
+  DUCKDB_BUILD: ${{ inputs.build_type || 'ReleaseStatic' }}
   ARCH_CFLAGS: -march=x86-64-v2 -mno-avx -mno-avx2 -mno-fma -mtune=generic
   ARCH_CXXFLAGS: -march=x86-64-v2 -mno-avx -mno-avx2 -mno-fma -mtune=generic
 
@@ -60,9 +53,14 @@ jobs:
             echo "Runner:" && uname -m
             grep -E 'model name|flags' /proc/cpuinfo | head -3
 
-      # ──────────────────────────────────────────────
-      #   System dependencies
-      # ──────────────────────────────────────────────
+      - name: Install build deps via apt
+        run: |
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends \
+              build-essential git cmake ninja-build pkg-config \
+              libssl-dev libreadline-dev zlib1g-dev libcurl4-openssl-dev \
+              liblz4-dev libpq-dev ca-certificates curl lsb-release gnupg
+
       - name: Add PostgreSQL APT repo
         run: |
             sudo install -d /usr/share/postgresql-common/pgdg
@@ -74,51 +72,38 @@ jobs:
               | sudo tee /etc/apt/sources.list.d/pgdg.list
             sudo apt-get update -qq
 
-      - name: Install build deps
+      - name: Install PostgreSQL ${{ env.PG_VERSION }} dev headers
         run: |
             sudo apt-get install -y -qq --no-install-recommends \
-              build-essential git cmake ninja-build pkg-config \
-              libssl-dev libreadline-dev zlib1g-dev \
-              libcurl4-openssl-dev liblz4-dev libpq-dev \
               postgresql-${{ env.PG_VERSION }} \
               postgresql-server-dev-${{ env.PG_VERSION }}
 
       - name: Verify pg_config
         run: pg_config --version
 
-      # ──────────────────────────────────────────────
-      #   Checkout repo (self)
-      # ──────────────────────────────────────────────
-      - name: Checkout pg_duckdb
+      - name: Checkout pg_duckdb with submodules
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
         with:
           submodules: recursive
           fetch-depth: 1
 
-      # ──────────────────────────────────────────────
-      #   Build
-      # ──────────────────────────────────────────────
       - name: Build pg_duckdb extension
         run: |
             export PG_CFLAGS="${{ env.ARCH_CFLAGS }}"
             export PG_CXXFLAGS="${{ env.ARCH_CXXFLAGS }}"
             export CFLAGS="${{ env.ARCH_CFLAGS }}"
             export CXXFLAGS="${{ env.ARCH_CXXFLAGS }}"
-            # Inject arch flags into DuckDB cmake build as well
             export CMAKE_VARS="-DCXX_EXTRA=-fvisibility=default \
               -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0 \
-              -DCMAKE_C_FLAGS="${{ env.ARCH_CFLAGS }}" \
-              -DCMAKE_CXX_FLAGS="${{ env.ARCH_CXXFLAGS }}""
+              -DCMAKE_C_FLAGS=\"${{ env.ARCH_CFLAGS }}\" \
+              -DCMAKE_CXX_FLAGS=\"${{ env.ARCH_CXXFLAGS }}\""
 
-            echo "=== Building with ==="
+            echo "=== Build config ==="
+            echo "DUCKDB_BUILD=$DUCKDB_BUILD"
             echo "PG_CFLAGS=$PG_CFLAGS"
             echo "PG_CXXFLAGS=$PG_CXXFLAGS"
-            echo "CMAKE_VARS=$CMAKE_VARS"
-            echo "DUCKDB_BUILD=$DUCKDB_BUILD"
 
-            make -j$(nproc) install DUCKDB_BUILD=ReleaseStatic 2>make -j$(nproc) 2>&11
+            make -j$(nproc) install DUCKDB_BUILD=$DUCKDB_BUILD 2>&1
 
       - name: List build artifacts
         run: |
@@ -129,28 +114,25 @@ jobs:
             echo "=== SQL files ==="
             find sql/ -name '*.sql' -ls 2>/dev/null || true
 
-      # ──────────────────────────────────────────────
-      #   Package artifact
-      # ──────────────────────────────────────────────
       - name: Prepare artifact
         run: |
             ARTIFACT="pg_duckdb-pg${{ env.PG_VERSION }}"
             mkdir -p /tmp/$ARTIFACT
 
-            # .so
+            # .so — multiple locations (build/ or installed)
             SO_FILE=$(find . -name 'pg_duckdb.so' -type f | head -1)
             if [ -n "$SO_FILE" ]; then
               cp "$SO_FILE" /tmp/$ARTIFACT/
-              echo "✅ Copied: $SO_FILE ($(stat -c%s "$SO_FILE") bytes)"
+              echo "Copied: $SO_FILE ($(stat -c%s "$SO_FILE") bytes)"
             else
-              echo "⚠️  No pg_duckdb.so found"
+              echo "No pg_duckdb.so found"
               find . -name '*.so' -type f | head -10
             fi
 
             # .control
             cp pg_duckdb.control /tmp/$ARTIFACT/ 2>/dev/null || true
 
-            # SQL
+            # SQL files
             mkdir -p /tmp/$ARTIFACT/sql
             cp sql/pg_duckdb--*.sql /tmp/$ARTIFACT/sql/ 2>/dev/null || true
 
@@ -167,7 +149,6 @@ jobs:
             CXXFLAGS: ${{ env.ARCH_CXXFLAGS }}
             EOF
 
-            echo ""
             echo "=== Artifact tree ==="
             find /tmp/$ARTIFACT -type f -ls
 
