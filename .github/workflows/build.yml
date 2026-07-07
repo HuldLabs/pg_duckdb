@@ -93,6 +93,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+        with:
+          submodules: recursive
           fetch-depth: 1
 
       # ──────────────────────────────────────────────
@@ -116,7 +118,7 @@ jobs:
             echo "CMAKE_VARS=$CMAKE_VARS"
             echo "DUCKDB_BUILD=$DUCKDB_BUILD"
 
-            make -j$(nproc) 2>&1
+            make -j$(nproc) install DUCKDB_BUILD=ReleaseStatic 2>make -j$(nproc) 2>&11
 
       - name: List build artifacts
         run: |
